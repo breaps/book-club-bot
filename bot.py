@@ -1,254 +1,301 @@
 import asyncio
-import json
 import os
 import random
-import threading 
 
-from flask import Flask
+from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher
 from aiogram.types import Message
 from aiogram.filters import Command
 
-TOKEN = os.getenv("TOKEN")
+import database
+
+
+load_dotenv()
+
+TOKEN = os.getenv("BOT_TOKEN")
+
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-DATA_FILE = "data.json"
+
+database.init_db()
 
 
-# 📦 загрузка данных
-def load_data():
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {
-            "current_book": None,
-            "progress": {},
-            "history": [],
-            "book_pool": []
-        }
+# -------------------------
+# Вспомогательная функция
+# -------------------------
+
+async def notify_all(text):
+    for user_id in database.users():
+        try:
+            await bot.send_message(
+                user_id,
+                text
+            )
+        except:
+            pass
 
 
-# 💾 сохранение
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+# -------------------------
+# Старт
+# -------------------------
 
-
-# 👤 имя пользователя
-def get_name(user: types.User):
-    return user.first_name or "Без имени"
-
-
-# 🟢 START
 @dp.message(Command("start"))
 async def start(message: Message):
+
+    database.add_user(
+        message.from_user.id,
+        message.from_user.first_name
+    )
+
     await message.answer(
-        "📚 Книжный клуб активирован\n\n"
-        "Команды:\n"
-        "/addbook — предложить книгу\n"
-        "/pick — выбрать книгу\n"
-        "/club — текущий прогресс\n"
-        "/history — что уже прочитано"
+        "📚 Добро пожаловать в книжный клуб!\n\n"
+        "Команды:\n\n"
+        "➕ /addbook — предложить книгу\n"
+        "📋 /list — посмотреть варианты\n"
+        "🎲 /pick — выбрать книгу\n"
+        "📖 /progress 30 — обновить прогресс\n"
+        "👥 /club — общий прогресс\n"
+        "🎉 /finish — закончить книгу\n"
+        "📚 /history — история"
     )
 
 
-# 📚 добавить книгу
+# -------------------------
+# Добавление книги
+# -------------------------
+
 @dp.message(Command("addbook"))
 async def addbook(message: Message):
-    data = load_data()
-    text = message.text.replace("/addbook", "").strip()
 
-    if not text:
-        await message.answer("Напиши название после команды")
+    title = message.text.replace(
+        "/addbook",
+        ""
+    ).strip()
+
+
+    if not title:
+
+        await message.answer(
+            "📚 Напиши так:\n\n"
+            "/addbook название книги"
+        )
+
         return
 
-    data["book_pool"].append(text)
-    save_data(data)
 
-    await message.answer(
-        "📥 Книга добавлена\n\n"
-        "Вариант принят. Посмотрим, повезёт ли ей выжить в отборе"
+    database.add_book(
+        title,
+        message.from_user.id
     )
 
 
-# 🎲 выбрать книгу
+    await message.answer(
+        f"✅ Добавлено:\n\n"
+        f"📖 {title}"
+    )
+
+
+
+# -------------------------
+# Список вариантов
+# -------------------------
+
+@dp.message(Command("list"))
+async def book_list(message: Message):
+
+    books = database.candidates()
+
+
+    if not books:
+
+        await message.answer(
+            "📭 Пока нет предложенных книг"
+        )
+
+        return
+
+
+    text = "🎲 Кандидаты:\n\n"
+
+    for i, book in enumerate(books,1):
+        text += f"{i}. {book}\n"
+
+
+    await message.answer(text)
+
+
+
+# -------------------------
+# Выбор книги
+# -------------------------
+
 @dp.message(Command("pick"))
 async def pick(message: Message):
-    data = load_data()
 
-    if not data["book_pool"]:
-        await message.answer("📭 Нет предложенных книг")
+    books = database.candidates()
+
+
+    if not books:
+
+        await message.answer(
+            "📭 Сначала добавьте варианты"
+        )
+
         return
 
-    book = random.choice(data["book_pool"])
 
-    data["current_book"] = book
-    data["progress"] = {}
-    data["book_pool"] = []
+    book=random.choice(books)
 
-    save_data(data)
 
-    await message.answer(
-        f"🎲 Выбор сделан\n\n"
-        f"📖 Сейчас читаем: *{book}*\n\n"
-        f"Всё. Отмены нет.",
-        parse_mode="Markdown"
+    database.set_current(book)
+
+
+    await notify_all(
+        "🥁🥁🥁\n\n"
+        "🎲 Судьба клуба решила!\n\n"
+        f"📖 Читаем:\n"
+        f"{book}\n\n"
+        "Начинаем чтение 📚"
     )
 
 
-# 📊 прогресс
+
+# -------------------------
+# Прогресс
+# -------------------------
+
 @dp.message(Command("progress"))
 async def progress(message: Message):
-    data = load_data()
-
-    if not data["current_book"]:
-        await message.answer("📭 Сейчас нет активной книги")
-        return
 
     try:
-        percent = int(message.text.split()[1])
+
+        percent=int(
+            message.text.split()[1]
+        )
+
     except:
-        await message.answer("Используй: /progress 30")
+
+        await message.answer(
+            "Используй:\n\n"
+            "/progress 50"
+        )
+
         return
 
-    user_id = str(message.from_user.id)
-    name = get_name(message.from_user)
 
-    data["progress"][user_id] = {
-        "name": name,
-        "percent": percent
-    }
-
-    save_data(data)
-
-    await message.answer(
-        f"✏️ Обновлено\n\nТеперь ты на {percent}%"
+    database.add_progress(
+        message.from_user.id,
+        percent
     )
 
 
-# 📖 клуб
+    await message.answer(
+        f"✏️ Прогресс обновлён:\n"
+        f"{percent}%"
+    )
+
+# -------------------------
+# Общий прогресс
+# -------------------------
+
 @dp.message(Command("club"))
 async def club(message: Message):
-    data = load_data()
 
-    if not data["current_book"]:
-        await message.answer("📭 Сейчас нет активной книги")
+    book=database.get_current()
+
+
+    if not book:
+
+        await message.answer(
+            "📭 Сейчас нет активной книги"
+        )
+
         return
 
-    text = f"📖 Сейчас читаем: *{data['current_book']}*\n\n👥 Прогресс:\n"
 
-    total = 0
-    count = 0
-
-    for user in data["progress"].values():
-        text += f"{user['name']} — {user['percent']}%\n"
-        total += user["percent"]
-        count += 1
-
-    avg = int(total / count) if count else 0
-
-    text += f"\n📊 Средний прогресс: {avg}%\n\n⏳ В процессе"
-
-    await message.answer(text, parse_mode="Markdown")
+    text=f"📖 {book}\n\n"
 
 
-# 👤 мой статус
-@dp.message(Command("me"))
-async def me(message: Message):
-    data = load_data()
-
-    user_id = str(message.from_user.id)
-
-    if user_id not in data["progress"]:
-        await message.answer("🤨 Ты ещё не добавлял прогресс")
-        return
-
-    user = data["progress"][user_id]
-
-    await message.answer(
-        f"📖 {data['current_book']}\n\n"
-        f"Твой прогресс: {user['percent']}%"
-    )
+    progress=database.get_progress()
 
 
-# 🎉 завершить книгу
+    if not progress:
+
+        text+="Пока никто не добавил прогресс"
+
+    else:
+
+        for name,percent in progress:
+            text+=f"{name} — {percent}%\n"
+
+
+    await message.answer(text)
+
+# -------------------------
+# Завершение книги
+# -------------------------
+
 @dp.message(Command("finish"))
 async def finish(message: Message):
-    data = load_data()
 
-    if not data["current_book"]:
-        await message.answer("📭 Нет активной книги")
+    book=database.finish_book()
+
+
+    if not book:
+
+        await message.answer(
+            "📭 Нет активной книги"
+        )
+
         return
 
-    data["history"].insert(0, data["current_book"])
 
-    data["current_book"] = None
-    data["progress"] = {}
+    await notify_all(
+        "🎉 Книга завершена!\n\n"
+        f"📖 {book}\n\n"
+        "Можно выбирать следующую 📚"
+    )
 
-    save_data(data)
+# -------------------------
+# История
+# -------------------------
 
-    await message.answer("🎉 Книга завершена и отправлена в архив")
-
-
-# 📚 история (последние 5)
 @dp.message(Command("history"))
 async def history(message: Message):
-    data = load_data()
 
-    if not data["history"]:
-        await message.answer("Пока ничего не прочитано")
+    books=database.history()
+
+
+    if not books:
+
+        await message.answer(
+            "📭 История пока пустая"
+        )
+
         return
 
-    text = "📚 Прочитано недавно:\n\n"
 
-    for i, book in enumerate(data["history"][:5], 1):
-        text += f"{i}. {book} — ✅\n"
+    text="📚 Последние книги:\n\n"
 
-    text += "\n/allhistory — полный список"
+
+    for i,book in enumerate(books,1):
+
+        text+=f"{i}. {book} ✅\n"
+
 
     await message.answer(text)
 
+# -------------------------
+# Запуск
+# -------------------------
 
-# 📜 вся история
-@dp.message(Command("allhistory"))
-async def allhistory(message: Message):
-    data = load_data()
-
-    if not data["history"]:
-        await message.answer("Пока ничего нет")
-        return
-
-    text = "📚 Вся история:\n\n"
-
-    for i, book in enumerate(data["history"], 1):
-        text += f"{i}. {book} — ✅\n"
-
-    await message.answer(text)
-
-
-
-# 🌐 маленький сервер для Render
-app = Flask(__name__)
-
-
-@app.route("/")
-def home():
-    return "Book club bot is running!"
-
-
-def run_web():
-    app.run(host="0.0.0.0", port=10000)
-
-
-# 🚀 запуск бота
 async def main():
+
     await dp.start_polling(bot)
 
+if __name__=="__main__":
 
-if __name__ == "__main__":
-    threading.Thread(target=run_web).start()
     asyncio.run(main())
