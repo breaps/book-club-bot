@@ -2,6 +2,9 @@ import asyncio
 import json
 import os
 import random
+import threading 
+
+from flask import Flask
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message
@@ -227,10 +230,25 @@ async def allhistory(message: Message):
     await message.answer(text)
 
 
-# 🚀 запуск
+
+# 🌐 маленький сервер для Render
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "Book club bot is running!"
+
+
+def run_web():
+    app.run(host="0.0.0.0", port=10000)
+
+
+# 🚀 запуск бота
 async def main():
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
+    threading.Thread(target=run_web).start()
     asyncio.run(main())
